@@ -5,19 +5,18 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const HOST = process.env.LLM_GATEWAY_HOST || "127.0.0.1";
-const PORT = Number(process.env.LLM_GATEWAY_PORT || 8000);
+const HOST = process.env.FORD_GATEWAY_HOST || "127.0.0.1";
+const PORT = Number(process.env.FORD_GATEWAY_PORT || 8000);
 const KEY_FILE = path.join(__dirname, "gateway.key");
-const MODEL_DEFAULT = process.env.LLM_GATEWAY_MODEL || "gpt-5-nano";
+const MODEL_DEFAULT = process.env.FORD_GATEWAY_MODEL || "gpt-5-nano";
 const OPENCODE_HOST = "127.0.0.1";
-const OPENCODE_PORT = Number(process.env.LLM_OPENCODE_PORT || 4097);
-const REUSE_OPENCODE = process.env.LLM_REUSE_OPENCODE === "true";
-const PROVIDER_ID = process.env.LLM_PROVIDER_ID || "your-provider-id";
+const OPENCODE_PORT = Number(process.env.FORD_OPENCODE_PORT || 4097);
+const REUSE_OPENCODE = process.env.FORD_REUSE_OPENCODE === "true";
 const OPENCODE_BASE = `http://${OPENCODE_HOST}:${OPENCODE_PORT}`;
 const LOG_PREFIX = "[gateway]";
 
 const MODELS = [
-  "claude-sonnet-latest", "deepseek",
+  "claude-sonnet-latest", "deepseek", "fordllm-claude-latest",
   "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest",
   "gemma", "glm", "gpt-5", "gpt-5-mini", "gpt-5-nano",
 ];
@@ -128,7 +127,7 @@ async function complete(request) {
   const session = await opencodeRequest("/session", { method: "POST", body: JSON.stringify({ title: "OpenAI gateway request" }) });
   const result = await opencodeRequest(`/session/${encodeURIComponent(session.id)}/message`, {
     method: "POST",
-     body: JSON.stringify({ model: { providerID: PROVIDER_ID, modelID: selectedModel }, parts: [{ type: "text", text: promptFromMessages(request.messages) }] }),
+     body: JSON.stringify({ model: { providerID: "fordllm", modelID: selectedModel }, parts: [{ type: "text", text: promptFromMessages(request.messages) }] }),
   });
   const output = (result.parts || []).filter((part) => part.type === "text").map((part) => part.text || "").join("");
   return { output, model: selectedModel };
@@ -151,7 +150,7 @@ function sendSse(res, result) {
 async function handle(req, res) {
   if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok" });
   if (!authorized(req)) return error(res, 401, "Missing or invalid gateway API key", "authentication_error");
-  if (req.method === "GET" && req.url === "/v1/models") return json(res, 200, { object: "list", data: MODELS.map((id) => ({ id, object: "model", created: 0, owned_by: "openai-compatible" })) });
+  if (req.method === "GET" && req.url === "/v1/models") return json(res, 200, { object: "list", data: MODELS.map((id) => ({ id, object: "model", created: 0, owned_by: "fordllm" })) });
   if (req.method !== "POST" || req.url !== "/v1/chat/completions") return error(res, 404, "Not found");
   try {
     const request = await readBody(req);
@@ -180,7 +179,7 @@ async function start() {
     res.once("finish", () => console.log(`${LOG_PREFIX} ${req.method} ${req.url} -> ${res.statusCode} ${Date.now() - startedAt}ms`));
     handle(req, res).catch((err) => error(res, 500, err.message, "server_error"));
   });
-  server.listen(PORT, HOST, () => { console.log(`OpenAI gateway listening at http://${HOST}:${PORT}/v1`); console.log(`Using configured model: ${MODEL_DEFAULT}`); });
+  server.listen(PORT, HOST, () => { console.log(`OpenAI gateway listening at http://${HOST}:${PORT}/v1`); console.log(`Using FordLLM model: ${MODEL_DEFAULT}`); });
 
   function shutdown() { shuttingDown = true; server.close(); if (opencode) opencode.kill(); }
   process.on("SIGINT", shutdown);
