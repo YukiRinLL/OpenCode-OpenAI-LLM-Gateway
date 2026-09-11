@@ -1,0 +1,8 @@
+{
+  "gatewayHost": "127.0.0.1",
+  "gatewayPort": 8000,
+  "model": "gpt-5-nano",
+  "providerId": "your-provider-id",
+  "opencodePort": 4097,
+  "reuseOpenCode": true
+}
