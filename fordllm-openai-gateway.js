@@ -21,6 +21,85 @@ const MODELS = [
   "gemma", "glm", "gpt-5", "gpt-5-mini", "gpt-5-nano",
 ];
 
+const SUPPORTED_ENDPOINTS = new Set([
+  "GET /health",
+  "GET /v1",
+  "GET /v1/models",
+  "GET /v1/models/:model",
+  "POST /v1/chat/completions",
+  "POST /v1/completions",
+  "POST /v1/responses",
+]);
+
+const STANDARD_ENDPOINTS = [
+  "GET /v1/models",
+  "GET /v1/models/:model",
+  "DELETE /v1/models/:model",
+  "POST /v1/chat/completions",
+  "POST /v1/completions",
+  "POST /v1/responses",
+  "GET /v1/responses/:response_id",
+  "DELETE /v1/responses/:response_id",
+  "POST /v1/responses/:response_id/cancel",
+  "POST /v1/embeddings",
+  "POST /v1/moderations",
+  "POST /v1/images/generations",
+  "POST /v1/images/edits",
+  "POST /v1/images/variations",
+  "POST /v1/audio/speech",
+  "POST /v1/audio/transcriptions",
+  "POST /v1/audio/translations",
+  "GET /v1/files",
+  "POST /v1/files",
+  "GET /v1/files/:file_id",
+  "DELETE /v1/files/:file_id",
+  "GET /v1/files/:file_id/content",
+  "GET /v1/batches",
+  "POST /v1/batches",
+  "GET /v1/batches/:batch_id",
+  "POST /v1/batches/:batch_id/cancel",
+  "POST /v1/fine_tuning/jobs",
+  "GET /v1/fine_tuning/jobs",
+  "GET /v1/fine_tuning/jobs/:fine_tuning_job_id",
+  "POST /v1/fine_tuning/jobs/:fine_tuning_job_id/cancel",
+  "GET /v1/fine_tuning/jobs/:fine_tuning_job_id/events",
+  "GET /v1/assistants",
+  "POST /v1/assistants",
+  "GET /v1/assistants/:assistant_id",
+  "POST /v1/assistants/:assistant_id",
+  "DELETE /v1/assistants/:assistant_id",
+  "GET /v1/threads/:thread_id",
+  "POST /v1/threads",
+  "POST /v1/threads/:thread_id",
+  "DELETE /v1/threads/:thread_id",
+  "GET /v1/threads/:thread_id/messages",
+  "POST /v1/threads/:thread_id/messages",
+  "GET /v1/threads/:thread_id/messages/:message_id",
+  "POST /v1/threads/:thread_id/messages/:message_id",
+  "DELETE /v1/threads/:thread_id/messages/:message_id",
+  "GET /v1/threads/:thread_id/runs",
+  "POST /v1/threads/:thread_id/runs",
+  "GET /v1/threads/:thread_id/runs/:run_id",
+  "POST /v1/threads/:thread_id/runs/:run_id",
+  "POST /v1/threads/:thread_id/runs/:run_id/cancel",
+  "GET /v1/threads/:thread_id/runs/:run_id/steps",
+  "GET /v1/threads/:thread_id/runs/:run_id/steps/:step_id",
+  "GET /v1/vector_stores",
+  "POST /v1/vector_stores",
+  "GET /v1/vector_stores/:vector_store_id",
+  "POST /v1/vector_stores/:vector_store_id",
+  "DELETE /v1/vector_stores/:vector_store_id",
+  "GET /v1/vector_stores/:vector_store_id/files",
+  "POST /v1/vector_stores/:vector_store_id/files",
+  "GET /v1/vector_stores/:vector_store_id/files/:file_id",
+  "DELETE /v1/vector_stores/:vector_store_id/files/:file_id",
+  "POST /v1/vector_stores/:vector_store_id/files/:file_id",
+  "POST /v1/vector_stores/:vector_store_id/file_batches",
+  "GET /v1/vector_stores/:vector_store_id/file_batches/:batch_id",
+  "POST /v1/vector_stores/:vector_store_id/file_batches/:batch_id/cancel",
+  "GET /v1/vector_stores/:vector_store_id/file_batches/:batch_id/files",
+];
+
 let opencode;
 let shuttingDown = false;
 
@@ -55,12 +134,27 @@ function isPortOpen(host, port) {
 
 function json(res, status, body) {
   const data = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(data) });
+  res.writeHead(status, {
+    "access-control-allow-headers": "Authorization, Content-Type",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(data),
+  });
   res.end(data);
 }
 
-function error(res, status, message, type = "invalid_request_error") {
-  json(res, status, { error: { message, type } });
+function error(res, status, message, type = "invalid_request_error", code = null) {
+  const body = { message, type };
+  if (code) body.code = code;
+  json(res, status, { error: body });
+}
+
+class RequestError extends Error {
+  constructor(message, code = "invalid_request") {
+    super(message);
+    this.code = code;
+  }
 }
 
 function authorized(req) {
@@ -78,7 +172,7 @@ function readBody(req) {
       }
     });
     req.on("end", () => {
-      try { resolve(JSON.parse(data || "{}")); } catch { reject(new Error("Request body must be valid JSON")); }
+      try { resolve(JSON.parse(data || "{}")); } catch { reject(new RequestError("Request body must be valid JSON")); }
     });
     req.on("error", reject);
   });
@@ -121,9 +215,9 @@ async function opencodeRequest(path, options = {}) {
 }
 
 async function complete(request) {
-  if (!Array.isArray(request.messages) || request.messages.length === 0) throw new Error("messages must be a non-empty array");
+  if (!Array.isArray(request.messages) || request.messages.length === 0) throw new RequestError("messages must be a non-empty array");
   const selectedModel = modelId(request.model);
-  if (!MODELS.includes(selectedModel)) throw new Error(`Unsupported model: ${selectedModel}`);
+  if (!MODELS.includes(selectedModel)) throw new RequestError(`The model '${selectedModel}' does not exist`, "model_not_found");
   const session = await opencodeRequest("/session", { method: "POST", body: JSON.stringify({ title: "OpenAI gateway request" }) });
   const result = await opencodeRequest(`/session/${encodeURIComponent(session.id)}/message`, {
     method: "POST",
@@ -139,26 +233,167 @@ function completionResponse(result, stream) {
   return { ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: result.output }, finish_reason: "stop" }] };
 }
 
-function sendSse(res, result) {
+function sendSseEvents(res, events) {
+  res.writeHead(200, {
+    "access-control-allow-origin": "*",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+  });
+  for (const event of events) {
+    if (event.name) res.write(`event: ${event.name}\n`);
+    res.write(`data: ${typeof event.data === "string" ? event.data : JSON.stringify(event.data)}\n\n`);
+  }
+  res.end();
+}
+
+function sendChatSse(res, result) {
   const base = completionResponse(result, true);
-  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" });
-  res.write(`data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: result.output }, finish_reason: null }] })}\n\n`);
-  res.write(`data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
-  res.end("data: [DONE]\n\n");
+  sendSseEvents(res, [
+    { data: { ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: result.output }, finish_reason: null }] } },
+    { data: { ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] } },
+    { data: "[DONE]" },
+  ]);
+}
+
+function modelInfo(id) {
+  return { id, object: "model", created: 0, owned_by: "fordllm" };
+}
+
+function endpointMatches(method, pathname, endpoint) {
+  const [endpointMethod, endpointPath] = endpoint.split(" ");
+  if (method !== endpointMethod) return false;
+  const pattern = endpointPath.split("/").map((part) => part.startsWith(":") ? "[^/]+" : part).join("\\/");
+  return new RegExp(`^${pattern}$`).test(pathname);
+}
+
+function endpointCatalog() {
+  return STANDARD_ENDPOINTS.map((endpoint) => ({
+    endpoint,
+    status: SUPPORTED_ENDPOINTS.has(endpoint) || endpoint === "GET /v1/models/:model" ? "supported" : "not_implemented",
+  }));
+}
+
+function completionResult(result, promptIndex = 0) {
+  return { index: promptIndex, text: result.output, logprobs: null, finish_reason: "stop" };
+}
+
+function responseMessages(input, instructions) {
+  if (typeof input === "string") {
+    return [
+      ...(instructions ? [{ role: "system", content: instructions }] : []),
+      { role: "user", content: input },
+    ];
+  }
+  if (!Array.isArray(input) || input.length === 0) return null;
+  const messages = instructions ? [{ role: "system", content: instructions }] : [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") return null;
+    if (item.role && (typeof item.content === "string" || Array.isArray(item.content))) {
+      messages.push({ role: item.role, content: item.content });
+      continue;
+    }
+    if (item.type === "message" && item.role && item.content !== undefined) {
+      messages.push({ role: item.role, content: item.content });
+      continue;
+    }
+    return null;
+  }
+  return messages;
+}
+
+function responsePayload(result) {
+  return {
+    id: `resp-${Date.now().toString(36)}`,
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    model: result.model,
+    status: "completed",
+    output: [{
+      id: `msg-${Date.now().toString(36)}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", annotations: [], text: result.output }],
+    }],
+    output_text: result.output,
+  };
+}
+
+async function handleChatCompletions(request, res) {
+  const result = await complete(request);
+  logChatContent(request, result);
+  if (request.stream) return sendChatSse(res, result);
+  return json(res, 200, completionResponse(result, false));
+}
+
+async function handleCompletions(request, res) {
+  if (typeof request.prompt !== "string" && !Array.isArray(request.prompt)) throw new RequestError("prompt must be a string or a non-empty array");
+  const prompts = Array.isArray(request.prompt) ? request.prompt : [request.prompt];
+  if (prompts.length === 0 || prompts.some((prompt) => typeof prompt !== "string")) throw new RequestError("prompt must contain only strings");
+  const results = await Promise.all(prompts.map((prompt) => complete({ model: request.model, messages: [{ role: "user", content: prompt }] })));
+  const id = `cmpl-${Date.now().toString(36)}`;
+  if (request.stream) {
+    return sendSseEvents(res, [
+      ...results.map((result, index) => ({ data: { id, object: "text_completion", created: Math.floor(Date.now() / 1000), model: result.model, choices: [{ ...completionResult(result, index), finish_reason: null }] } })),
+      { data: "[DONE]" },
+    ]);
+  }
+  return json(res, 200, { id, object: "text_completion", created: Math.floor(Date.now() / 1000), model: results[0].model, choices: results.map(completionResult) });
+}
+
+async function handleResponses(request, res) {
+  const messages = responseMessages(request.input, request.instructions);
+  if (!messages) throw new RequestError("input must be a string or an array of supported messages");
+  const result = await complete({ model: request.model, messages });
+  logChatContent({ messages }, result);
+  const response = responsePayload(result);
+  if (!request.stream) return json(res, 200, response);
+  return sendSseEvents(res, [
+    { name: "response.created", data: { type: "response.created", response } },
+    { name: "response.output_text.delta", data: { type: "response.output_text.delta", delta: result.output, output_index: 0, content_index: 0 } },
+    { name: "response.completed", data: { type: "response.completed", response } },
+    { data: "[DONE]" },
+  ]);
 }
 
 async function handle(req, res) {
-  if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok" });
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-headers": "Authorization, Content-Type",
+      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+      "access-control-allow-origin": "*",
+    });
+    return res.end();
+  }
+  const pathname = new URL(req.url, `http://${HOST}:${PORT}`).pathname;
+  if (req.method === "GET" && pathname === "/health") return json(res, 200, { status: "ok" });
   if (!authorized(req)) return error(res, 401, "Missing or invalid gateway API key", "authentication_error");
-  if (req.method === "GET" && req.url === "/v1/models") return json(res, 200, { object: "list", data: MODELS.map((id) => ({ id, object: "model", created: 0, owned_by: "fordllm" })) });
-  if (req.method !== "POST" || req.url !== "/v1/chat/completions") return error(res, 404, "Not found");
+  if (req.method === "GET" && pathname === "/v1") return json(res, 200, { object: "gateway", endpoints: endpointCatalog() });
+  if (req.method === "GET" && pathname === "/v1/models") return json(res, 200, { object: "list", data: MODELS.map(modelInfo) });
+  if (req.method === "GET" && pathname.startsWith("/v1/models/")) {
+    const id = decodeURIComponent(pathname.slice("/v1/models/".length));
+    if (!MODELS.includes(id)) return error(res, 404, `The model '${id}' does not exist`, "invalid_request_error", "model_not_found");
+    return json(res, 200, modelInfo(id));
+  }
+  if (STANDARD_ENDPOINTS.some((endpoint) => endpointMatches(req.method, pathname, endpoint)) &&
+      !endpointMatches(req.method, pathname, "GET /v1/models") &&
+      !endpointMatches(req.method, pathname, "GET /v1/models/:model") &&
+      !endpointMatches(req.method, pathname, "POST /v1/chat/completions") &&
+      !endpointMatches(req.method, pathname, "POST /v1/completions") &&
+      !endpointMatches(req.method, pathname, "POST /v1/responses")) {
+    return error(res, 501, `Endpoint ${req.method} ${pathname} is not implemented by this gateway`, "server_error", "endpoint_not_supported");
+  }
+  if (req.method !== "POST" || !["/v1/chat/completions", "/v1/completions", "/v1/responses"].includes(pathname)) return error(res, 404, "Not found");
   try {
     const request = await readBody(req);
-    const result = await complete(request);
-    logChatContent(request, result);
-    if (request.stream) return sendSse(res, result);
-    return json(res, 200, completionResponse(result, false));
-  } catch (err) { return error(res, 500, err.message, "server_error"); }
+    if (pathname === "/v1/chat/completions") return await handleChatCompletions(request, res);
+    if (pathname === "/v1/completions") return await handleCompletions(request, res);
+    return await handleResponses(request, res);
+  } catch (err) {
+    if (err instanceof RequestError) return error(res, 400, err.message, "invalid_request_error", err.code);
+    return error(res, 500, err.message, "server_error");
+  }
 }
 
 function startOpenCode() {
